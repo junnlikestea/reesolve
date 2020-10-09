@@ -19,7 +19,7 @@ To build Reesolve:
 $ git clone https://github.com/junnlikestea/reesolve
 $ cd reesolve
 $ cargo build --release
-$ ./target/release/reesolve --version
+$ ./target/release/ree --version
 ```
 
 ### Usage
