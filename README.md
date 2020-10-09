@@ -2,8 +2,8 @@
 ![release](https://github.com/junnlikestea/reesolve/workflows/release/badge.svg)
 [![Build status](https://github.com/junnlikestea/reesolve/workflows/Continuous%20Integration/badge.svg)](https://github.com/junnlikestea/reesolve/actions)
 
-Reesolve tool to do dual stack IPv4 & IPv6 A & AAAA lookups, since these seem to 
-be the records I'm most frequently after. Why not write a tool for it?
+reesolve a tool for dual stack IPv4 & IPv6 A & AAAA lookups, these seem to 
+be the records I'm frequently after. Why not write a tool for it?
 
 
 ### Installation
