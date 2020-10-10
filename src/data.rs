@@ -1,3 +1,4 @@
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -6,8 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use trust_dns_proto::rr;
 
-// The ResultsCache is a struct that the resulting records will be written to before being serialized
-// into a json file. They key is the `IpAddr` for A or AAAA records, and Name if record type is CNAME.
+/// The ResultsCache is a struct that the resulting records will be written to before being serialized
+/// into a json or csv file. They key is the `IpAddr` for A or AAAA records, and Name if record type is CNAME.
 #[derive(Debug)]
 pub(crate) struct ResultsCache {
     pub inner: Mutex<HashMap<String, ResolveResponse>>,
@@ -21,14 +22,15 @@ impl ResultsCache {
         })
     }
 
-    // Returns the number of results cached
+    /// Returns the number of results cached
     pub(crate) async fn num_results(&self) -> usize {
         let lock = self.inner.lock().await;
         lock.keys().len()
     }
 
-    // Drains records from the queue and inerts them into the ResultsCache. This method will be
-    // called every time the queue reaches capacity, thereby avoding taking the lock too often.
+    /// Drains records from the queue and inerts them into the `ResultsCache`. This method will be
+    /// called every time the queue reaches capacity, thereby avoding taking the lock too often and
+    /// reducing contention.
     pub(crate) async fn insert(&self, records: &mut VecDeque<ResolveResponse>) {
         // Acquire the lock
         let mut map = self.inner.lock().await;
@@ -37,16 +39,23 @@ impl ResultsCache {
         drop(map);
     }
 
-    // Serializes the contents of the `ResultsCache` into a json string.
-    pub(crate) async fn json(&self) -> String {
+    /// Serializes the contents of the `ResultsCache` into json.
+    pub(crate) async fn json(&self) -> Vec<u8> {
         let lock = self.inner.lock().await;
         let vals: Vec<&ResolveResponse> = lock.values().collect();
-        serde_json::to_string_pretty(&vals).unwrap()
+        serde_json::to_vec_pretty(&vals).unwrap()
+    }
+
+    /// Serializes the contents of the `ResultsCache` into a csv.
+    pub(crate) async fn csv(&self) -> Result<Vec<u8>> {
+        let mut wtr = csv::Writer::from_writer(vec![]);
+        let lock = self.inner.lock().await;
+        lock.values().map(|v| wtr.serialize(v)).for_each(drop);
+        Ok(wtr.into_inner()?)
     }
 }
 
 // Represents the different kind of reponses we will get when making a DNS query.
-//TODO: CNAME records should also have a field for the query they were tied to.
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(untagged)]
 pub(crate) enum ResolveResponse {
@@ -75,8 +84,9 @@ pub(crate) enum ResolveResponse {
 }
 
 impl ResolveResponse {
-    // A wrapper around the `From` trait, but adds the query if the record is a CNAME.
+    /// A wrapper around the `From` trait, but adds the query if the record is a CNAME.
     pub(crate) fn new(record: &rr::resource::Record, q: Arc<String>) -> ResolveResponse {
+        //TODO: missing `ResolveResponse::Error`
         let mut record = ResolveResponse::from(record);
 
         if let ResolveResponse::Record { kind, query, .. } = &mut record {
@@ -89,8 +99,8 @@ impl ResolveResponse {
         record
     }
 
-    // Returns the fields that we use for keys inside the ResultsCache. This is a clone for now, but
-    // in the future we could return an `Arc<String>` to avoid the clone.
+    /// Returns the fields that we use for keys inside the ResultsCache. This is a clone for now, but
+    /// in the future we could return an `Arc<String>` to avoid the clone.
     pub(crate) fn key(&self) -> String {
         match self {
             ResolveResponse::IpRecord { value, .. } => value.unwrap().to_string(),
@@ -100,7 +110,8 @@ impl ResolveResponse {
     }
 }
 
-// Handles conversion from a `resource::Record` to a `ResolveResponse`. Since we only care about
+// Handles conversion from a `resource::Record` to a `ResolveResponse`. Since we only care about a
+// few of the record types this is not exhaustive.
 impl From<&rr::resource::Record> for ResolveResponse {
     fn from(record: &rr::resource::Record) -> Self {
         use rr::record_type::RecordType;

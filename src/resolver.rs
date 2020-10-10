@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use trust_dns_resolver::{
     config::LookupIpStrategy, config::NameServerConfigGroup, config::ResolverConfig,
     config::ResolverOpts, error::ResolveError, error::ResolveErrorKind, lookup_ip::LookupIp,
@@ -19,11 +19,14 @@ use trust_dns_resolver::{
 // for the receiver to take from the channel.
 const CHANSIZE: usize = 32 * 2;
 
+/// The `Resolver` struct is responsible for storing configuration details
 #[derive(Debug)]
 pub struct Resolver {
     config: ResolverConfig,
     options: ResolverOpts,
     nameservers: Vec<IpAddr>,
+    output_format: String,
+    output_path: PathBuf,
 }
 
 impl Default for Resolver {
@@ -45,7 +48,7 @@ impl Default for Resolver {
             config: ResolverConfig::cloudflare(),
             options: ResolverOpts {
                 ndots: 1,
-                timeout: Duration::from_secs(1),
+                timeout: Duration::from_secs(5),
                 attempts: 2,
                 rotate: false,
                 check_names: true,
@@ -63,18 +66,28 @@ impl Default for Resolver {
                 preserve_intermediates: true,
             },
             nameservers,
+            output_format: String::default(),
+            output_path: PathBuf::default(),
         }
     }
 }
 
 impl Resolver {
-    // Sets the timeout
+    /// Builder method that sets the fields used for output configuration
+    pub fn output(mut self, format: &str, path: PathBuf) -> Self {
+        self.output_format = format.to_string();
+        self.output_path = path;
+        self
+    }
+
+    /// Builder method that sets the timeout for the request. Defaults to 5 seconds
     pub fn timeout(mut self, timeout: u64) -> Self {
         self.options.timeout = Duration::from_secs(timeout);
         self
     }
 
-    // Loads a list of custom resolvers (nameservers) as the resolver config
+    /// Loads a list of custom resolvers (nameservers) into the resolver config. Default set of
+    /// resolvers is Google and CloudFlare.
     pub fn load_resolvers(mut self, path: &str) -> Self {
         let file = std::fs::read_to_string(path).unwrap();
         let ips: Vec<IpAddr> = file.lines().map(|l| l.parse::<IpAddr>().unwrap()).collect();
@@ -84,8 +97,8 @@ impl Resolver {
         self
     }
 
-    // Handles extracting the records or the errors from the dns query and sends it down the
-    // channel. The receiver handles caching the responses before serializing them as json.
+    /// Handles extracting the records or the errors from the dns query and sends it down the
+    /// channel. The receiver handles caching the responses before serializing them.
     async fn deliver_response(
         mut records_sender: Sender<VecDeque<ResolveResponse>>,
         response: std::result::Result<LookupIp, ResolveError>,
@@ -95,7 +108,6 @@ impl Resolver {
 
         match response {
             Ok(r) => {
-                // should probably add the query as well
                 let query = Arc::new(r.as_lookup().query().name().to_utf8());
                 r.as_lookup()
                     .record_iter()
@@ -130,8 +142,8 @@ impl Resolver {
         Ok(())
     }
 
-    // Receives the records and adds them into a queue, when the queue is full it's contents will
-    // be written into the output file.
+    /// Receives the records and adds them into a queue, when the queue is full it's contents will
+    /// be written into the `ResultsCache`
     async fn cache_responses(
         mut receiver: Receiver<VecDeque<ResolveResponse>>,
         mut queue_size: usize,
@@ -172,16 +184,16 @@ impl Resolver {
         }
     }
 
-    // Create a resolver for each name server, and then spawn a task for each one. This is required
-    // because we want to retrieve the record even if two nameservers results conflict with each other. If
-    // we didn't care about retrieving conflicting records, we could just make one
-    // `TokioAsyncResolver` with a `NameServerConfigGroup` containing all the nameservers
+    /// Create a resolver for each name server, and then spawn a task for each one. This is required
+    /// because we want to retrieve the record even if two nameservers results conflict with each other. If
+    /// we didn't care about retrieving conflicting records, we could just make one
+    /// `TokioAsyncResolver` with a `NameServerConfigGroup` containing all the nameservers
     async fn enumerate_ns(
         &self,
         target: String,
         sender: Sender<std::result::Result<LookupIp, ResolveError>>,
     ) {
-        // instead of sending a single LookupIp across the channel each time, maybe we should
+        // Instead of sending a single LookupIp across the channel each time, maybe we should
         // instead send them in batches of Vec<LookupIp, ResolveError> ?
         let resolvers = self.nameservers.clone();
         let tx = sender.clone();
@@ -207,19 +219,17 @@ impl Resolver {
         results.await;
     }
 
-    // Does dual stack IPV4 & IPV6 lookups and writes the results to a file on disk
-    pub async fn resolve(
-        self,
-        hosts: Vec<String>,
-        concurrency: usize,
-        path: PathBuf,
-    ) -> Result<()> {
+    /// The resolve method is responsible for enumerating all provided nameservers for all hosts.
+    /// Currently it does parallel Ipv4 & Ipv6 lookups for A and AAAA records and all of their
+    /// intermediate records. These records will then be cached before later being serialized into
+    /// either json or csv format.
+    pub async fn resolve(self, hosts: Vec<String>, concurrency: usize) -> Result<()> {
         use tokio::prelude::*;
-        let mut outfile = fs::File::create(&path).await?;
         let total = hosts.len() * self.nameservers.len();
         let cache = ResultsCache::new();
         let resolver = Arc::new(self);
         let queue_size: usize = 256;
+        let mut file = fs::File::create(&resolver.output_path).await?;
 
         let (lookup_sender, mut lookup_receiver) =
             channel::<std::result::Result<LookupIp, ResolveError>>(CHANSIZE);
@@ -258,15 +268,17 @@ impl Resolver {
         response_manager.await?;
         output_manager.await?;
 
-        let json = cache.json().await;
-        match outfile.write_all(&json.as_bytes()).await {
-            Ok(_) => info!("wrote {} bytes to the output file", json.len()),
-            Err(e) => error!("couldn't write to output file; got error {}", e),
-        }
+        let results = if resolver.output_format == "csv" {
+            cache.csv().await?
+        } else {
+            cache.json().await
+        };
+
+        file.write_all(&results).await?;
         println!(
             "Done! {} records written to {:?}",
             cache.num_results().await,
-            path
+            resolver.output_path
         );
 
         Ok(())

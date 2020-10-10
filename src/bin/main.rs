@@ -56,22 +56,31 @@ fn create_clap_app(version: &str) -> clap::App {
                 .default_value("records")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("output-format")
+                .help("ree -f csv")
+                .short("-f")
+                .long("output-format")
+                .default_value("json")
+                .takes_value(true),
+        )
 }
 
-fn make_path(path: &str) -> PathBuf {
+fn make_path(path: &str, format: &str) -> PathBuf {
     let path = Path::new(path);
     let file = path.file_name().unwrap().to_str().unwrap();
-    path.with_file_name(format!("{}.json", file))
+    path.with_file_name(format!("{}.{}", file, format))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = create_clap_app("0.0.1");
+    let args = create_clap_app("0.0.2");
     let matches = args.get_matches();
     let concurrency: usize = matches.value_of("concurrency").unwrap().parse()?;
     let timeout: u64 = matches.value_of("timeout").unwrap().parse()?;
     let input_file = matches.value_of("input-file");
-    let out_file = make_path(matches.value_of("output").unwrap());
+    let output_format = matches.value_of("output-format").unwrap();
+    let output_path = make_path(matches.value_of("output").unwrap(), output_format);
     let targets = Input::new(input_file).hosts();
 
     if matches.is_present("verbosity") {
@@ -88,11 +97,13 @@ async fn main() -> Result<()> {
         let resolvers = matches.value_of("resolvers").unwrap();
         ree.load_resolvers(resolvers)
             .timeout(timeout)
-            .resolve(targets, concurrency, out_file)
+            .output(output_format, output_path)
+            .resolve(targets, concurrency)
             .await?;
     } else {
         ree.timeout(timeout)
-            .resolve(targets, concurrency, out_file)
+            .output(output_format, output_path)
+            .resolve(targets, concurrency)
             .await?;
     }
 
