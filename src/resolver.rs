@@ -96,12 +96,12 @@ impl Resolver {
         match response {
             Ok(r) => {
                 // should probably add the query as well
-                //let query = r.as_lookup().query().name().to_utf8();
+                let query = Arc::new(r.as_lookup().query().name().to_utf8());
                 r.as_lookup()
                     .record_iter()
                     .map(|record| {
                         info!("got {:?}", record);
-                        records.push_front(ResolveResponse::from(record));
+                        records.push_front(ResolveResponse::new(record, Arc::clone(&query)));
                     })
                     .for_each(drop);
 
@@ -140,14 +140,15 @@ impl Resolver {
     ) {
         let mut queue_count: usize = 0;
 
-        // If queue size is larger than the total number of targets, set it to the total.
+        // If queue size is larger than the total, set it to the total.
         if queue_size > total {
             queue_size = total
         }
 
         // Instead of writing to the `ResultsCache` each time we receieve a response, we only
         // write when the queue contains `queue_size` number of responses. This is a neat little
-        // optimisation that will stop us from asking for the lock for every response we get.
+        // optimisation that will reduce the contention, because the lock is taken less often it
+        // will be faster to acquire.
         let mut queue: VecDeque<ResolveResponse> = VecDeque::with_capacity(queue_size);
         while let Some(mut records) = receiver.recv().await {
             info!("added {} responses to the queue", records.len());

@@ -46,10 +46,13 @@ impl ResultsCache {
 }
 
 // Represents the different kind of reponses we will get when making a DNS query.
+//TODO: CNAME records should also have a field for the query they were tied to.
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(untagged)]
 pub(crate) enum ResolveResponse {
     Record {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
         name: String,
         #[serde(rename(serialize = "type"))]
         kind: String,
@@ -72,6 +75,20 @@ pub(crate) enum ResolveResponse {
 }
 
 impl ResolveResponse {
+    // A wrapper around the `From` trait, but adds the query if the record is a CNAME.
+    pub(crate) fn new(record: &rr::resource::Record, q: Arc<String>) -> ResolveResponse {
+        let mut record = ResolveResponse::from(record);
+
+        if let ResolveResponse::Record { kind, query, .. } = &mut record {
+            // get an owned copy of the query when the record is a CNAME
+            if kind == "CNAME" {
+                *query = Some(q.to_string());
+            }
+        }
+
+        record
+    }
+
     // Returns the fields that we use for keys inside the ResultsCache. This is a clone for now, but
     // in the future we could return an `Arc<String>` to avoid the clone.
     pub(crate) fn key(&self) -> String {
@@ -101,12 +118,14 @@ impl From<&rr::resource::Record> for ResolveResponse {
                 is_wildcard,
             },
             RecordType::CNAME => Self::Record {
+                query: None,
                 name: record.rdata().as_cname().unwrap().to_utf8(),
                 kind: kind.to_string(),
                 ttl,
                 is_wildcard,
             },
             _ => Self::Record {
+                query: None,
                 name,
                 kind: kind.to_string(),
                 ttl,
