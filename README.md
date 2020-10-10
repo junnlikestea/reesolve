@@ -1,4 +1,4 @@
-# Reesolve (ree)
+# reesolve (ree)
 ![release](https://github.com/junnlikestea/reesolve/workflows/release/badge.svg)
 [![Build status](https://github.com/junnlikestea/reesolve/workflows/Continuous%20Integration/badge.svg)](https://github.com/junnlikestea/reesolve/actions)
 
@@ -55,6 +55,14 @@ The default timeout is `5` seconds, if you would like to change that use the `-t
 flag.
 ```
 ree -i hosts.txt -t 15
+```
+
+**Changing the output format**
+
+reesolve supports currently supports two output formats `.json` (default) and 
+`.csv` to select a specific output format use the `-f` flag.
+```
+ree -i hosts.txt -f csv
 ```
 
 **Changing the output path or filename**
