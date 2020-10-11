@@ -5,7 +5,9 @@ use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use trust_dns_proto::error::ProtoErrorKind;
 use trust_dns_proto::rr;
+use trust_dns_resolver::error::{ResolveError, ResolveErrorKind};
 
 /// The ResultsCache is a struct that the resulting records will be written to before being serialized
 /// into a json or csv file. They key is the `IpAddr` for A or AAAA records, and Name if record type is CNAME.
@@ -60,8 +62,7 @@ impl ResultsCache {
 #[serde(untagged)]
 pub(crate) enum ResolveResponse {
     Record {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        query: Option<String>,
+        query: String,
         name: String,
         #[serde(rename(serialize = "type"))]
         kind: String,
@@ -69,6 +70,7 @@ pub(crate) enum ResolveResponse {
         is_wildcard: bool,
     },
     IpRecord {
+        query: String,
         name: String,
         #[serde(rename(serialize = "ip"))]
         value: Option<IpAddr>,
@@ -86,17 +88,15 @@ pub(crate) enum ResolveResponse {
 impl ResolveResponse {
     /// A wrapper around the `From` trait, but adds the query if the record is a CNAME.
     pub(crate) fn new(record: &rr::resource::Record, q: Arc<String>) -> ResolveResponse {
-        //TODO: missing `ResolveResponse::Error`
         let mut record = ResolveResponse::from(record);
 
-        if let ResolveResponse::Record { kind, query, .. } = &mut record {
-            // get an owned copy of the query when the record is a CNAME
-            if kind == "CNAME" {
-                *query = Some(q.to_string());
+        match &mut record {
+            ResolveResponse::Record { query, .. } | ResolveResponse::IpRecord { query, .. } => {
+                *query = q.to_string();
+                record
             }
+            _ => record,
         }
-
-        record
     }
 
     /// Returns the fields that we use for keys inside the ResultsCache. This is a clone for now, but
@@ -106,6 +106,48 @@ impl ResolveResponse {
             ResolveResponse::IpRecord { value, .. } => value.unwrap().to_string(),
             ResolveResponse::Record { name, .. } => name.clone(),
             ResolveResponse::Error { query, .. } => query.clone(),
+        }
+    }
+
+    /// Extracts the errors we want from the `ResolveError`
+    pub(crate) fn from_error(error: ResolveError) -> Option<ResolveResponse> {
+        //TODO: How can we get the query that triggered the error, if it doesn't actually contain
+        // the field?
+
+        match error.kind() {
+            // Message & Msg cannot be in the same match arm, because of the different inner types
+            // String/&str
+            ResolveErrorKind::Message(m) => Some(ResolveResponse::Error {
+                query: String::default(),
+                response_code: m.to_string(),
+            }),
+            ResolveErrorKind::Msg(m) => Some(ResolveResponse::Error {
+                query: String::default(),
+                response_code: m.to_string(),
+            }),
+            ResolveErrorKind::NoRecordsFound {
+                query,
+                response_code,
+                ..
+            } => Some(ResolveResponse::Error {
+                query: query.name().to_string(),
+                response_code: response_code.to_string(),
+            }),
+
+            // SERVFAIL are returned as a `ProtoErrorKind::Msg` or `ProtoErrorKind::Message` ?
+            ResolveErrorKind::Proto(e) => match e.kind() {
+                ProtoErrorKind::Msg(s) => Some(ResolveResponse::Error {
+                    query: String::default(),
+                    response_code: s.to_string(),
+                }),
+                ProtoErrorKind::Message(s) => Some(ResolveResponse::Error {
+                    query: String::default(),
+                    response_code: s.to_string(),
+                }),
+                _ => None,
+            },
+            ResolveErrorKind::Io(..) => None,
+            ResolveErrorKind::Timeout => None,
         }
     }
 }
@@ -122,6 +164,7 @@ impl From<&rr::resource::Record> for ResolveResponse {
 
         match kind {
             RecordType::A | RecordType::AAAA => Self::IpRecord {
+                query: String::default(),
                 name,
                 value: record.rdata().to_ip_addr(),
                 kind: kind.to_string(),
@@ -129,14 +172,14 @@ impl From<&rr::resource::Record> for ResolveResponse {
                 is_wildcard,
             },
             RecordType::CNAME => Self::Record {
-                query: None,
+                query: String::default(),
                 name: record.rdata().as_cname().unwrap().to_utf8(),
                 kind: kind.to_string(),
                 ttl,
                 is_wildcard,
             },
             _ => Self::Record {
-                query: None,
+                query: String::default(),
                 name,
                 kind: kind.to_string(),
                 ttl,

@@ -103,41 +103,29 @@ impl Resolver {
         mut records_sender: Sender<VecDeque<ResolveResponse>>,
         response: std::result::Result<LookupIp, ResolveError>,
     ) -> Result<()> {
+        //TODO: Should probably only send across the channel once the VecDeque reaches a certain
+        // capacity.
         let mut records: VecDeque<ResolveResponse> = VecDeque::new();
         let mut errors: VecDeque<ResolveResponse> = VecDeque::new();
 
         match response {
             Ok(r) => {
                 let query = Arc::new(r.as_lookup().query().name().to_utf8());
-                r.as_lookup()
-                    .record_iter()
-                    .map(|record| {
-                        info!("got {:?}", record);
-                        records.push_front(ResolveResponse::new(record, Arc::clone(&query)));
-                    })
-                    .for_each(drop);
+                records.extend(r.as_lookup().record_iter().map(|record| {
+                    info!("got {:?}", record);
+                    ResolveResponse::new(record, Arc::clone(&query))
+                }));
 
                 records_sender.send(records).await?;
             }
 
-            // All of the errors we care about return `ResolveErrorKind::NoRecordsFound`
-            Err(e) => match e.kind() {
-                ResolveErrorKind::NoRecordsFound {
-                    query,
-                    response_code,
-                    ..
-                } => {
-                    warn!("got resolve error for {} {:?}", query, response_code);
-                    let query = query.name().to_string();
-                    errors.push_front(ResolveResponse::Error {
-                        query: query.clone(),
-                        response_code: response_code.to_string(),
-                    });
-
+            Err(e) => {
+                let error_response = ResolveResponse::from_error(e);
+                if let Some(error) = error_response {
+                    errors.push_front(error);
                     records_sender.send(errors).await?;
                 }
-                _ => warn!("got {:?}", e),
-            },
+            }
         }
         Ok(())
     }
@@ -236,9 +224,9 @@ impl Resolver {
         let (records_sender, records_receiver) = channel::<VecDeque<ResolveResponse>>(CHANSIZE);
 
         // Handles storing the itermediate results before writing the final output to disk.
-        let results_map2 = Arc::clone(&cache);
+        let cache_arc = Arc::clone(&cache);
         let output_manager = tokio::spawn(async move {
-            Resolver::cache_responses(records_receiver, queue_size, results_map2, total).await
+            Resolver::cache_responses(records_receiver, queue_size, cache_arc, total).await
         });
 
         // Recieves the responses and fires off a task to convert the `LookupIp` into our `Record`
