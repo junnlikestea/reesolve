@@ -46,6 +46,7 @@ fn create_clap_app(version: &str) -> clap::App {
                 .default_value("5")
                 .takes_value(true),
         )
+        //TODO: if the stdout argument is used, we shouldn't use output or output_format
         .arg(
             Arg::with_name("output")
                 .help(
@@ -64,6 +65,11 @@ fn create_clap_app(version: &str) -> clap::App {
                 .default_value("json")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("stdout")
+                .help("ree -i hosts.txt --stdout")
+                .long("--stdout")
+        )
 }
 
 fn make_path(path: &str, format: &str) -> PathBuf {
@@ -80,6 +86,8 @@ async fn main() -> Result<()> {
     let timeout: u64 = matches.value_of("timeout").unwrap().parse()?;
     let input_file = matches.value_of("input-file");
     let output_format = matches.value_of("output-format").unwrap();
+    let stdout = matches.is_present("stdout");
+
     let output_path = make_path(matches.value_of("output").unwrap(), output_format);
     let targets = Input::new(input_file).hosts();
 
@@ -97,12 +105,12 @@ async fn main() -> Result<()> {
         let resolvers = matches.value_of("resolvers").unwrap();
         ree.load_resolvers(resolvers)
             .timeout(timeout)
-            .output(output_format, output_path)
+            .output(output_format, output_path, stdout)
             .resolve(targets, concurrency)
             .await?;
     } else {
         ree.timeout(timeout)
-            .output(output_format, output_path)
+            .output(output_format, output_path, stdout)
             .resolve(targets, concurrency)
             .await?;
     }

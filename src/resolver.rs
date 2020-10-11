@@ -11,13 +11,12 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tracing::{info, warn};
 use trust_dns_resolver::{
     config::LookupIpStrategy, config::NameServerConfigGroup, config::ResolverConfig,
-    config::ResolverOpts, error::ResolveError, error::ResolveErrorKind, lookup_ip::LookupIp,
-    TokioAsyncResolver,
+    config::ResolverOpts, error::ResolveError, lookup_ip::LookupIp, TokioAsyncResolver,
 };
 
 // The maximum number of messages that can be in the channel before calls to .send start waiting
 // for the receiver to take from the channel.
-const CHANSIZE: usize = 32 * 2;
+const CHANSIZE: usize = 32 * 4;
 
 /// The `Resolver` struct is responsible for storing configuration details
 #[derive(Debug)]
@@ -27,6 +26,7 @@ pub struct Resolver {
     nameservers: Vec<IpAddr>,
     output_format: String,
     output_path: PathBuf,
+    stdout: bool,
 }
 
 impl Default for Resolver {
@@ -68,15 +68,17 @@ impl Default for Resolver {
             nameservers,
             output_format: String::default(),
             output_path: PathBuf::default(),
+            stdout: false,
         }
     }
 }
 
 impl Resolver {
     /// Builder method that sets the fields used for output configuration
-    pub fn output(mut self, format: &str, path: PathBuf) -> Self {
+    pub fn output(mut self, format: &str, path: PathBuf, stdout: bool) -> Self {
         self.output_format = format.to_string();
         self.output_path = path;
+        self.stdout = stdout;
         self
     }
 
@@ -104,7 +106,7 @@ impl Resolver {
         response: std::result::Result<LookupIp, ResolveError>,
     ) -> Result<()> {
         //TODO: Should probably only send across the channel once the VecDeque reaches a certain
-        // capacity.
+        //capacity.
         let mut records: VecDeque<ResolveResponse> = VecDeque::new();
         let mut errors: VecDeque<ResolveResponse> = VecDeque::new();
 
@@ -120,6 +122,7 @@ impl Resolver {
             }
 
             Err(e) => {
+                warn!("got error {:?}", e);
                 let error_response = ResolveResponse::from_error(e);
                 if let Some(error) = error_response {
                     errors.push_front(error);
@@ -217,7 +220,6 @@ impl Resolver {
         let cache = ResultsCache::new();
         let resolver = Arc::new(self);
         let queue_size: usize = 256;
-        let mut file = fs::File::create(&resolver.output_path).await?;
 
         let (lookup_sender, mut lookup_receiver) =
             channel::<std::result::Result<LookupIp, ResolveError>>(CHANSIZE);
@@ -262,13 +264,17 @@ impl Resolver {
             cache.json().await
         };
 
-        file.write_all(&results).await?;
-        println!(
-            "Done! {} records written to {:?}",
-            cache.num_results().await,
-            resolver.output_path
-        );
-
+        if resolver.stdout {
+            println!("{}", String::from_utf8_lossy(&results));
+        } else {
+            let mut file = fs::File::create(&resolver.output_path).await?;
+            file.write_all(&results).await?;
+            println!(
+                "Done! {} records written to {:?}",
+                cache.num_results().await,
+                resolver.output_path
+            );
+        }
         Ok(())
     }
 }
