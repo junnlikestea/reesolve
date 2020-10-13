@@ -50,7 +50,7 @@ fn create_clap_app(version: &str) -> clap::App {
         .arg(
             Arg::with_name("output")
                 .help(
-                    "ree -i hosts.txt -o /some/path/file\nWill automatically add the .json extension to the file.",
+                    "ree -i hosts.txt -o /some/path/file\nWill automatically add the extension to the file.",
                 )
                 .short("o")
                 .long("output")
@@ -80,7 +80,7 @@ fn make_path(path: &str, format: &str) -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = create_clap_app("0.0.2");
+    let args = create_clap_app("0.0.3");
     let matches = args.get_matches();
     let concurrency: usize = matches.value_of("concurrency").unwrap().parse()?;
     let timeout: u64 = matches.value_of("timeout").unwrap().parse()?;
