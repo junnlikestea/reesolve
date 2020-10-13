@@ -2,7 +2,7 @@
 ![release](https://github.com/junnlikestea/reesolve/workflows/release/badge.svg)
 [![Build status](https://github.com/junnlikestea/reesolve/workflows/Continuous%20Integration/badge.svg)](https://github.com/junnlikestea/reesolve/actions)
 
-reesolve a tool for dual stack IPv4 & IPv6 A & AAAA lookups, these seem to 
+reesolve a tool for dual stack IPv4 & IPv6 A/AAAA and CNAME lookups. These seem to 
 be the records I'm frequently after. Why not write a tool for it?
 
 
@@ -57,12 +57,44 @@ flag.
 ree -i hosts.txt -t 15
 ```
 
+**Print to stdout instead of an output file** 
+
+If you would rather the output to go to stdout you can use the `--stdout` flag. This makes
+it easier if you want to pipe the output into tools like `jq`
+```
+junn:~$ echo example.com | ree --stdout | jq
+
+[
+  {
+    "query": "example.com.",
+    "name": "example.com.",
+    "ip": "2606:2800:220:1:248:1893:25c8:1946",
+    "type": "AAAA",
+    "ttl": 21240,
+    "is_wildcard": false
+  },
+  {
+    "query": "example.com.",
+    "name": "example.com.",
+    "ip": "93.184.216.34",
+    "type": "A",
+    "ttl": 21444,
+    "is_wildcard": false
+  },
+  {
+    "query": "example.com.",
+    "response_code": "No Error"
+  }
+]
+
+```
+
 **Changing the output format**
 
-reesolve supports currently supports two output formats `.json` (default) and 
+reesolve currently supports two output file formats `.json` (default) and 
 `.csv` to select a specific output format use the `-f` flag.
 ```
-ree -i hosts.txt -f csv
+junn:~$ ree -i hosts.txt -f csv
 ```
 
 **Changing the output path or filename**
@@ -71,7 +103,7 @@ By default Reesolve will write all results as json, to an output file named `rec
 in the current directory. However, if you would like to change the path and filename
 you could do so with the `-o` flag.
 ```
-ree -i hosts.txt -o some/path/filename
+junn:~$ ree -i hosts.txt -o some/path/filename
 ```
 
 **The output format**
@@ -96,6 +128,55 @@ more output formats supported feel free to raise an issue.
   }
 ]
 ```
+
+**Filtering the output for a specific host** 
+
+If you want to quickly check all results for a particular host, you could do something like:
+```
+junn:~$ ree -i hosts.txt --stdout | jq -r '.[] | select(.query=="docs.hackerone.com.")'
+
+ {
+  "query": "docs.hackerone.com.",
+  "name": "hacker0x01.github.io.",
+  "ip": "185.199.111.153",
+  "type": "A",
+  "ttl": 3599,
+  "is_wildcard": false
+}
+{
+  "query": "docs.hackerone.com.",
+  "name": "hacker0x01.github.io.",
+  "ip": "185.199.108.153",
+  "type": "A",
+  "ttl": 3599,
+  "is_wildcard": false
+}
+{
+  "query": "docs.hackerone.com.",
+  "name": "hacker0x01.github.io.",
+  "ip": "185.199.110.153",
+  "type": "A",
+  "ttl": 3599,
+  "is_wildcard": false
+}
+{
+  "query": "docs.hackerone.com.",
+  "name": "hacker0x01.github.io.",
+  "ip": "185.199.109.153",
+  "type": "A",
+  "ttl": 3599,
+  "is_wildcard": false
+}
+{
+  "query": "docs.hackerone.com.",
+  "name": "hacker0x01.github.io.",
+  "type": "CNAME",
+  "ttl": 224,
+  "is_wildcard": false
+}
+
+```
+
 **How can I tell what's going on?**
 
 If you would like some more verbose output for debugging purposes, you can use the `-v` flag. 
@@ -105,16 +186,16 @@ in the results.
 * `info`: General information like how many results each source returned.
 * `debug`: Lots and lots of information about what's going on under the hood.
 ```
-ree -i hosts.txt -r resolvers.txt -v info
+junn:~$ ree -i hosts.txt -r resolvers.txt -v info
 ```
 
 ### Panic messages!
-Reesolve uses [trust-dns](https://github.com/bluejekyll/trust-dns) under the hood
+reesolve uses [trust-dns](https://github.com/bluejekyll/trust-dns) under the hood
 and there is an [open issue](https://github.com/bluejekyll/trust-dns/issues/1232) referring 
-to this very error. These panics don't actually affect the output of Reesolve, until
+to this very error. These panics don't actually affect the output of reesolve, until
 the issue has been fixed in trust-dns they will still occur when running the tool.
 ```
-junn@void:~/reesolve/target/release$ time ./ree -i hosts.txt -t 15 -c 100
+junn@void:~/reesolve/target/release$ ./ree -i hosts.txt -t 15 -c 100
 thread 'tokio-runtime-worker' panicked at 'internal error: entered unreachable code: non NoError responses should have been converted to an error above', /rustc/04488afe34512aa4c33566eb16d8c912a3ae04f9/src/libstd/macros.rs:16:9
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 thread 'tokio-runtime-worker' panicked at 'internal error: entered unreachable code: non NoError responses should have been converted to an error above', /rustc/04488afe34512aa4c33566eb16d8c912a3ae04f9/src/libstd/macros.rs:16:9
@@ -134,12 +215,13 @@ Reesolve will limit itself to `200` concurrent and parallel tasks, you can chang
 the `-c` flag. 
 
 ```
-ree -i hosts.txt -c 500
+junn:~$ ree -i hosts.txt -c 500
 ``` 
 
 ### Thanks
 [0xatul](https://twitter.com/0xatul) For feedback and improvement ideas.
 
+[shubs](https://twitter.com/infosec_au) For the feedback and encouragement.
 
 ### Disclaimer
 Developers have/has no responsibility or authority over any kind of:
