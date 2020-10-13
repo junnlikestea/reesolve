@@ -9,14 +9,22 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tracing::{info, warn};
+use trust_dns_proto::{rr::record_type::RecordType, xfer::dns_request::DnsRequestOptions};
 use trust_dns_resolver::{
     config::LookupIpStrategy, config::NameServerConfigGroup, config::ResolverConfig,
-    config::ResolverOpts, error::ResolveError, lookup_ip::LookupIp, TokioAsyncResolver,
+    config::ResolverOpts, error::ResolveError, lookup::Lookup, lookup_ip::LookupIp,
+    TokioAsyncResolver,
 };
 
 // The maximum number of messages that can be in the channel before calls to .send start waiting
 // for the receiver to take from the channel.
 const CHANSIZE: usize = 32 * 4;
+
+/// `Lookup` for general records, and `LookupIp` for A & AAAA records.
+enum Lookups {
+    Lookup(std::result::Result<Lookup, ResolveError>),
+    LookupIp(std::result::Result<LookupIp, ResolveError>),
+}
 
 /// The `Resolver` struct is responsible for storing configuration details
 #[derive(Debug)]
@@ -103,32 +111,44 @@ impl Resolver {
     /// channel. The receiver handles caching the responses before serializing them.
     async fn deliver_response(
         mut records_sender: Sender<VecDeque<ResolveResponse>>,
-        response: std::result::Result<LookupIp, ResolveError>,
+        lookup: Lookups,
     ) -> Result<()> {
         //TODO: Should probably only send across the channel once the VecDeque reaches a certain
-        //capacity.
+        // capacity !
         let mut records: VecDeque<ResolveResponse> = VecDeque::new();
-        let mut errors: VecDeque<ResolveResponse> = VecDeque::new();
 
-        match response {
-            Ok(r) => {
-                let query = Arc::new(r.as_lookup().query().name().to_utf8());
-                records.extend(r.as_lookup().record_iter().map(|record| {
-                    info!("got {:?}", record);
-                    ResolveResponse::new(record, Arc::clone(&query))
-                }));
+        match lookup {
+            Lookups::Lookup(result) => match result {
+                Ok(r) => {
+                    let query = Arc::new(r.query().name().to_utf8());
+                    records.extend(r.record_iter().map(|record| {
+                        info!("got {:?}", record);
+                        ResolveResponse::new(record, Arc::clone(&query))
+                    }));
 
-                records_sender.send(records).await?;
-            }
-
-            Err(e) => {
-                warn!("got error {:?}", e);
-                let error_response = ResolveResponse::from_error(e);
-                if let Some(error) = error_response {
-                    errors.push_front(error);
-                    records_sender.send(errors).await?;
+                    records_sender.send(records).await?;
                 }
-            }
+
+                Err(e) => {
+                    send_error(e, records_sender).await?;
+                }
+            },
+
+            Lookups::LookupIp(result) => match result {
+                Ok(r) => {
+                    let query = Arc::new(r.as_lookup().query().name().to_utf8());
+                    records.extend(r.as_lookup().record_iter().map(|record| {
+                        info!("got {:?}", record);
+                        ResolveResponse::new(record, Arc::clone(&query))
+                    }));
+
+                    records_sender.send(records).await?;
+                }
+
+                Err(e) => {
+                    send_error(e, records_sender).await?;
+                }
+            },
         }
         Ok(())
     }
@@ -179,30 +199,49 @@ impl Resolver {
     /// because we want to retrieve the record even if two nameservers results conflict with each other. If
     /// we didn't care about retrieving conflicting records, we could just make one
     /// `TokioAsyncResolver` with a `NameServerConfigGroup` containing all the nameservers
-    async fn enumerate_ns(
-        &self,
-        target: String,
-        sender: Sender<std::result::Result<LookupIp, ResolveError>>,
-    ) {
+    async fn enumerate_ns(&self, target: String, sender: Sender<Lookups>) {
         // Instead of sending a single LookupIp across the channel each time, maybe we should
         // instead send them in batches of Vec<LookupIp, ResolveError> ?
         let resolvers = self.nameservers.clone();
         let tx = sender.clone();
         let results = futures::stream::iter(resolvers)
             .map(|ns| {
-                let t = target.clone();
-                let mut tx = tx.clone();
+                // Required clone; `resolver.lookup_ip(target)` won't allow arcs because of trait
+                // bounds adding `.` performs a faster query.
+                let target_cpy = target.clone() + ".";
+                let mut tx1 = tx.clone();
                 let group = NameServerConfigGroup::from_ips_clear(&[ns], 53);
-                let resolver = TokioAsyncResolver::tokio(
-                    ResolverConfig::from_parts(None, vec![], group),
-                    self.options,
-                )
-                .expect("error building resolver");
+                let resolver = Arc::new(
+                    TokioAsyncResolver::tokio(
+                        ResolverConfig::from_parts(None, vec![], group),
+                        self.options,
+                    )
+                    .expect("error building resolver"),
+                );
+
+                // Push the lookup for A & AAAA records to it's own task
+                let resolver_cpy = Arc::clone(&resolver);
+                let t = target_cpy.clone();
                 tokio::spawn(async move {
-                    // Cheaper query
+                    info!("performing IP lookup for {}", &t);
                     // https://docs.rs/trust-dns-resolver/0.20.0-alpha.2/trust_dns_resolver/struct.AsyncResolver.html#method.lookup_ip
-                    let resp = resolver.lookup_ip(t + ".").await;
-                    tx.send(resp).await
+                    let resp = resolver_cpy.lookup_ip(t).await;
+                    tx1.send(Lookups::LookupIp(resp)).await
+                });
+
+                // Push the lookup for CNAME records to it's own task
+                let mut tx2 = tx.clone();
+                tokio::spawn(async move {
+                    info!("performing CNAME lookup for {}", &target_cpy);
+
+                    let options = DnsRequestOptions {
+                        expects_multiple_responses: false,
+                        use_edns: false,
+                    };
+                    let resp = resolver
+                        .lookup(target_cpy, RecordType::CNAME, options)
+                        .await;
+                    tx2.send(Lookups::Lookup(resp)).await
                 })
             })
             .buffer_unordered(32) // 32 nameservers at once
@@ -221,8 +260,7 @@ impl Resolver {
         let resolver = Arc::new(self);
         let queue_size: usize = 256;
 
-        let (lookup_sender, mut lookup_receiver) =
-            channel::<std::result::Result<LookupIp, ResolveError>>(CHANSIZE);
+        let (lookup_sender, mut lookup_receiver) = channel::<Lookups>(CHANSIZE);
         let (records_sender, records_receiver) = channel::<VecDeque<ResolveResponse>>(CHANSIZE);
 
         // Handles storing the itermediate results before writing the final output to disk.
@@ -237,9 +275,7 @@ impl Resolver {
             while let Some(response) = lookup_receiver.recv().await {
                 let records_sender = records_sender.clone();
                 // Push the handling of the responses off into their own tasks.
-                tokio::spawn(
-                    async move { Resolver::deliver_response(records_sender, response).await },
-                );
+                tokio::spawn(async move { Self::deliver_response(records_sender, response).await });
             }
         });
 
@@ -277,4 +313,24 @@ impl Resolver {
         }
         Ok(())
     }
+}
+
+// temporary function used to convert the `ResolveError` and push it into the channel, which will
+// then later be stored in the `ResultsCache`. Made a function to avoid the duplication inside the
+// `resolver.deliver_response` method.
+async fn send_error(
+    error: ResolveError,
+    mut sender: Sender<VecDeque<ResolveResponse>>,
+) -> Result<()> {
+    warn!("got error {:?}", error);
+
+    let mut errors: VecDeque<ResolveResponse> = VecDeque::new();
+    let error_response = ResolveResponse::from_error(error);
+
+    if let Some(e) = error_response {
+        errors.push_front(e);
+        sender.send(errors).await?;
+    }
+
+    Ok(())
 }
