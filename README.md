@@ -2,7 +2,7 @@
 ![release](https://github.com/junnlikestea/reesolve/workflows/release/badge.svg)
 [![Build status](https://github.com/junnlikestea/reesolve/workflows/Continuous%20Integration/badge.svg)](https://github.com/junnlikestea/reesolve/actions)
 
-reesolve a tool for dual stack IPv4 & IPv6 A/AAAA and CNAME lookups. These seem to 
+Fetches A/AAAA Ipv4/6 and CNAME records. These seem to 
 be the records I'm frequently after. Why not write a tool for it?
 
 
