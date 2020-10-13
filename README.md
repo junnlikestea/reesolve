@@ -3,7 +3,7 @@
 [![Build status](https://github.com/junnlikestea/reesolve/workflows/Continuous%20Integration/badge.svg)](https://github.com/junnlikestea/reesolve/actions)
 
 Fetches A/AAAA Ipv4/6 and CNAME records. These seem to 
-be the records I'm frequently after. Why not write a tool for it?
+be the records I'm frequently after, why not write a tool for it?
 
 
 ### Installation
