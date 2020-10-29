@@ -1,4 +1,5 @@
 use crate::data::{ResolveResponse, ResultsCache};
+use crate::OutputFormat;
 use crate::Result;
 use futures::StreamExt;
 use std::collections::VecDeque;
@@ -18,7 +19,8 @@ use trust_dns_resolver::{
 
 // The maximum number of messages that can be in the channel before calls to .send start waiting
 // for the receiver to take from the channel.
-const CHANSIZE: usize = 32 * 4;
+const CHAN_SIZE: usize = 32 * 4;
+const CANARY: &str = "cmVlc29sdmVjYW5hcnk";
 
 /// `Lookup` for general records, and `LookupIp` for A & AAAA records.
 enum Lookups {
@@ -32,7 +34,7 @@ pub struct Resolver {
     config: ResolverConfig,
     options: ResolverOpts,
     nameservers: Vec<IpAddr>,
-    output_format: String,
+    output_format: OutputFormat,
     output_path: PathBuf,
     stdout: bool,
 }
@@ -74,7 +76,7 @@ impl Default for Resolver {
                 preserve_intermediates: true,
             },
             nameservers,
-            output_format: String::default(),
+            output_format: OutputFormat::Json,
             output_path: PathBuf::default(),
             stdout: false,
         }
@@ -84,7 +86,11 @@ impl Default for Resolver {
 impl Resolver {
     /// Builder method that sets the fields used for output configuration
     pub fn output(mut self, format: &str, path: PathBuf, stdout: bool) -> Self {
-        self.output_format = format.to_string();
+        self.output_format = match format {
+            "json" => OutputFormat::Json,
+            "csv" => OutputFormat::Csv,
+            _ => OutputFormat::Json,
+        };
         self.output_path = path;
         self.stdout = stdout;
         self
@@ -223,7 +229,6 @@ impl Resolver {
                 let resolver_cpy = Arc::clone(&resolver);
                 let t = target_cpy.clone();
                 tokio::spawn(async move {
-                    info!("performing IP lookup for {}", &t);
                     // https://docs.rs/trust-dns-resolver/0.20.0-alpha.2/trust_dns_resolver/struct.AsyncResolver.html#method.lookup_ip
                     let resp = resolver_cpy.lookup_ip(t).await;
                     tx1.send(Lookups::LookupIp(resp)).await
@@ -232,8 +237,6 @@ impl Resolver {
                 // Push the lookup for CNAME records to it's own task
                 let mut tx2 = tx.clone();
                 tokio::spawn(async move {
-                    info!("performing CNAME lookup for {}", &target_cpy);
-
                     let options = DnsRequestOptions {
                         expects_multiple_responses: false,
                         use_edns: false,
@@ -249,6 +252,43 @@ impl Resolver {
         results.await;
     }
 
+    /// To detect wilcard we append a canary string to the results and do an A lookup for the
+    /// resulting record. If it returns a result, then the record is a wildcard.
+    async fn detect_wildcard(&self, cache: Arc<ResultsCache>, concurrency: usize) {
+        // Clone the HashMap in the cache so we don't have to hold the lock the entire duration of
+        // `detect_wildcard`
+        let map = cache.records().await;
+        let mut options = self.options.clone();
+        options.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
+        let resolver = Arc::new(
+            TokioAsyncResolver::tokio(self.config.clone(), options)
+                .expect("error building resolver"),
+        );
+
+        let results = futures::stream::iter(map.into_iter().filter_map(|tup| match tup.1 {
+            ResolveResponse::IpRecord { name, .. } | ResolveResponse::Record { name, .. } => {
+                Some((tup.0, name))
+            }
+            _ => None,
+        }))
+        .map(|(key, name)| {
+            let cache = Arc::clone(&cache);
+            let resolver = Arc::clone(&resolver);
+
+            tokio::spawn(async move {
+                let wildcard = format!("{}.{}", CANARY, name);
+                if let Ok(_) = resolver.lookup_ip(wildcard).await {
+                    info!("{} is wildcard record", &key);
+                    // Only acquire the lock if we've found a wildcard
+                    cache.set_wildcard(&key).await;
+                }
+            })
+        })
+        .buffer_unordered(concurrency)
+        .collect::<Vec<_>>();
+        results.await;
+    }
+
     /// The resolve method is responsible for enumerating all provided nameservers for all hosts.
     /// Currently it does parallel Ipv4 & Ipv6 lookups for A and AAAA records and all of their
     /// intermediate records. These records will then be cached before later being serialized into
@@ -260,8 +300,8 @@ impl Resolver {
         let resolver = Arc::new(self);
         let queue_size: usize = 256;
 
-        let (lookup_sender, mut lookup_receiver) = channel::<Lookups>(CHANSIZE);
-        let (records_sender, records_receiver) = channel::<VecDeque<ResolveResponse>>(CHANSIZE);
+        let (lookup_sender, mut lookup_receiver) = channel::<Lookups>(CHAN_SIZE);
+        let (records_sender, records_receiver) = channel::<VecDeque<ResolveResponse>>(CHAN_SIZE);
 
         // Handles storing the itermediate results before writing the final output to disk.
         let cache_arc = Arc::clone(&cache);
@@ -294,12 +334,11 @@ impl Resolver {
         response_manager.await?;
         output_manager.await?;
 
-        let results = if resolver.output_format == "csv" {
-            cache.csv().await?
-        } else {
-            cache.json().await
-        };
+        resolver
+            .detect_wildcard(Arc::clone(&cache), concurrency)
+            .await;
 
+        let results = cache.results(&resolver.output_format).await?;
         if resolver.stdout {
             println!("{}", String::from_utf8_lossy(&results));
         } else {

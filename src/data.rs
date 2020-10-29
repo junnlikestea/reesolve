@@ -1,3 +1,4 @@
+use crate::OutputFormat;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -38,18 +39,41 @@ impl ResultsCache {
         let mut map = self.inner.lock().await;
         // Drain the queue of all records
         map.extend(records.drain(..).map(|r| (r.key(), r)));
-        drop(map);
+    }
+
+    pub async fn records(&self) -> HashMap<String, ResolveResponse> {
+        let map = self.inner.lock().await;
+        map.clone()
+    }
+
+    pub(crate) async fn set_wildcard(&self, key: &String) {
+        let mut lock = self.inner.lock().await;
+
+        if let Some(record) = lock.get_mut(key) {
+            if let ResolveResponse::IpRecord { is_wildcard, .. }
+            | ResolveResponse::Record { is_wildcard, .. } = record
+            {
+                *is_wildcard = true;
+            }
+        }
+    }
+
+    pub(crate) async fn results(&self, format: &OutputFormat) -> Result<Vec<u8>> {
+        match format {
+            OutputFormat::Csv => self.csv().await,
+            OutputFormat::Json => self.json().await,
+        }
     }
 
     /// Serializes the contents of the `ResultsCache` into json.
-    pub(crate) async fn json(&self) -> Vec<u8> {
+    async fn json(&self) -> Result<Vec<u8>> {
         let lock = self.inner.lock().await;
         let vals: Vec<&ResolveResponse> = lock.values().collect();
-        serde_json::to_vec_pretty(&vals).unwrap()
+        Ok(serde_json::to_vec_pretty(&vals).unwrap())
     }
 
     /// Serializes the contents of the `ResultsCache` into a csv.
-    pub(crate) async fn csv(&self) -> Result<Vec<u8>> {
+    async fn csv(&self) -> Result<Vec<u8>> {
         let mut wtr = csv::Writer::from_writer(vec![]);
         let lock = self.inner.lock().await;
         lock.values().map(|v| wtr.serialize(v)).for_each(drop);
@@ -58,7 +82,7 @@ impl ResultsCache {
 }
 
 // Represents the different kind of reponses we will get when making a DNS query.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(untagged)]
 pub(crate) enum ResolveResponse {
     Record {
@@ -160,7 +184,7 @@ impl From<&rr::resource::Record> for ResolveResponse {
         let name = record.name().to_utf8();
         let kind = record.record_type();
         let ttl = record.ttl();
-        let is_wildcard = record.name().is_wildcard();
+        let is_wildcard = false;
 
         match kind {
             RecordType::A | RecordType::AAAA => Self::IpRecord {
