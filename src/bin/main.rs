@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
             .with_env_filter(matches.value_of("verbosity").unwrap())
             .with_filter_reloading();
         let _handle = builder.reload_handle();
-        builder.try_init()?;
+        builder.try_init().expect("error building logger");
     }
 
     // if the user specified a list of resolvers, use them.

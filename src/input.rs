@@ -16,11 +16,7 @@ impl Input {
     fn read(path: Option<&str>) -> Result<Vec<String>> {
         let mut contents = Vec::new();
         let reader: Box<dyn BufRead> = match path {
-            Some(filepath) => {
-                Box::new(BufReader::new(File::open(filepath).map_err(|e| {
-                    format!("tried to read file {} got {}", filepath, e)
-                })?))
-            }
+            Some(filepath) => Box::new(BufReader::new(File::open(filepath)?)),
             None => Box::new(BufReader::new(io::stdin())),
         };
 

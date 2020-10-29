@@ -136,7 +136,7 @@ impl Resolver {
                 }
 
                 Err(e) => {
-                    send_error(e, records_sender).await?;
+                    push_error(e, records_sender).await?;
                 }
             },
 
@@ -152,7 +152,7 @@ impl Resolver {
                 }
 
                 Err(e) => {
-                    send_error(e, records_sender).await?;
+                    push_error(e, records_sender).await?;
                 }
             },
         }
@@ -258,7 +258,7 @@ impl Resolver {
         // Clone the HashMap in the cache so we don't have to hold the lock the entire duration of
         // `detect_wildcard`
         let map = cache.records().await;
-        let mut options = self.options.clone();
+        let mut options = self.options;
         options.ip_strategy = LookupIpStrategy::Ipv4thenIpv6;
         let resolver = Arc::new(
             TokioAsyncResolver::tokio(self.config.clone(), options)
@@ -277,7 +277,7 @@ impl Resolver {
 
             tokio::spawn(async move {
                 let wildcard = format!("{}.{}", CANARY, name);
-                if let Ok(_) = resolver.lookup_ip(wildcard).await {
+                if resolver.lookup_ip(wildcard).await.is_ok() {
                     info!("{} is wildcard record", &key);
                     // Only acquire the lock if we've found a wildcard
                     cache.set_wildcard(&key).await;
@@ -299,11 +299,11 @@ impl Resolver {
         let cache = ResultsCache::new();
         let resolver = Arc::new(self);
         let queue_size: usize = 256;
-
         let (lookup_sender, mut lookup_receiver) = channel::<Lookups>(CHAN_SIZE);
         let (records_sender, records_receiver) = channel::<VecDeque<ResolveResponse>>(CHAN_SIZE);
 
-        // Handles storing the itermediate results before writing the final output to disk.
+        // Handles storing the itermediate results before writing the final output to disk or
+        // stdout
         let cache_arc = Arc::clone(&cache);
         let output_manager = tokio::spawn(async move {
             Resolver::cache_responses(records_receiver, queue_size, cache_arc, total).await
@@ -357,7 +357,7 @@ impl Resolver {
 // temporary function used to convert the `ResolveError` and push it into the channel, which will
 // then later be stored in the `ResultsCache`. Made a function to avoid the duplication inside the
 // `resolver.deliver_response` method.
-async fn send_error(
+async fn push_error(
     error: ResolveError,
     mut sender: Sender<VecDeque<ResolveResponse>>,
 ) -> Result<()> {

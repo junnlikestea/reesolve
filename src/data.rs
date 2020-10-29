@@ -46,7 +46,7 @@ impl ResultsCache {
         map.clone()
     }
 
-    pub(crate) async fn set_wildcard(&self, key: &String) {
+    pub(crate) async fn set_wildcard(&self, key: &str) {
         let mut lock = self.inner.lock().await;
 
         if let Some(record) = lock.get_mut(key) {
