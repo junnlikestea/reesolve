@@ -15,8 +15,8 @@ opt-level = 3
 debug = false
 
 [dependencies]
-trust-dns-resolver = "0.20.0-alpha.2"
-trust-dns-proto = "0.20.0-alpha.2"
+trust-dns-resolver = "0.20.0-alpha.3"
+trust-dns-proto = "0.20.0-alpha.3"
 tokio = { version = "0.2.22", features = ["fs","sync", "rt-threaded", "macros"]}
 serde = { version = "1.0.115", features = ["derive", "rc"] }
 serde_json = "1.0.57"

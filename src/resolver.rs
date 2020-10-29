@@ -71,7 +71,6 @@ impl Default for Resolver {
                 negative_min_ttl: None,
                 positive_max_ttl: None,
                 negative_max_ttl: None,
-                distrust_nx_responses: true,
                 num_concurrent_reqs: 2,
                 preserve_intermediates: true,
             },
@@ -107,7 +106,7 @@ impl Resolver {
     pub fn load_resolvers(mut self, path: &str) -> Self {
         let file = std::fs::read_to_string(path).unwrap();
         let ips: Vec<IpAddr> = file.lines().map(|l| l.parse::<IpAddr>().unwrap()).collect();
-        let group = NameServerConfigGroup::from_ips_clear(&ips, 53);
+        let group = NameServerConfigGroup::from_ips_clear(&ips, 53, false);
         self.config = ResolverConfig::from_parts(None, vec![], group);
         self.nameservers = ips;
         self
@@ -216,7 +215,7 @@ impl Resolver {
                 // bounds adding `.` performs a faster query.
                 let target_cpy = target.clone() + ".";
                 let mut tx1 = tx.clone();
-                let group = NameServerConfigGroup::from_ips_clear(&[ns], 53);
+                let group = NameServerConfigGroup::from_ips_clear(&[ns], 53, false);
                 let resolver = Arc::new(
                     TokioAsyncResolver::tokio(
                         ResolverConfig::from_parts(None, vec![], group),
