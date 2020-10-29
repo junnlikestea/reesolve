@@ -80,7 +80,7 @@ fn make_path(path: &str, format: &str) -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = create_clap_app("0.0.3");
+    let args = create_clap_app(env!("CARGO_PKG_VERSION"));
     let matches = args.get_matches();
     let concurrency: usize = matches.value_of("concurrency").unwrap().parse()?;
     let timeout: u64 = matches.value_of("timeout").unwrap().parse()?;
