@@ -3,7 +3,7 @@
 [![Build status](https://github.com/junnlikestea/reesolve/workflows/Continuous%20Integration/badge.svg)](https://github.com/junnlikestea/reesolve/actions)
 
 Fetches A/AAAA Ipv4/6 and CNAME records. These seem to 
-be the records I'm frequently after. Why not write a tool for it?
+be the records I'm frequently after, why not write a tool for it?
 
 
 ### Installation
@@ -61,7 +61,7 @@ ree -i hosts.txt -t 15
 
 If you would rather the output to go to stdout you can use the `--stdout` flag. This makes
 it easier if you want to pipe the output into tools like `jq`
-```
+```json
 junn:~$ echo example.com | ree --stdout | jq
 
 [
@@ -110,7 +110,7 @@ junn:~$ ree -i hosts.txt -o some/path/filename
 
 Reesolve will write the results to an output file by default. If you would like 
 more output formats supported feel free to raise an issue.
-```
+```json
 [
   {
     "name": "hackerone.com.",
@@ -132,7 +132,7 @@ more output formats supported feel free to raise an issue.
 **Filtering the output for a specific host** 
 
 If you want to quickly check all results for a particular host, you could do something like:
-```
+```json
 junn:~$ ree -i hosts.txt --stdout | jq -r '.[] | select(.query=="docs.hackerone.com.")'
 
  {
